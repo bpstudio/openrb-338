@@ -144,17 +144,30 @@ comes back, as in the app. Meters move because the view paints continuously;
 there is no cpal stream. `ORB_VST_SONG` is opened in `initialize` through
 `orb_ui::session::open_song`.
 
-`PlugParams` is empty. The host has no stand-in knobs. Cutoff, resonance,
-vintage and the master are the panel's controls, at the engine's constructor
-values until the panel or a CC moves them. `reset` halts, locates to tick 0,
-and clears the clock and the held notes. It does not reload the song.
+`PlugParams` is the panel's bytes, in groups Ableton shows as units: Mix
+(master, compressor route, PCF route, and a strip per channel), 303 1, 303 2,
+808, 909, Delay, Distortion, PCF and Compressor. Drum voices are subgroups.
+The parameter title starts with that module (`Comp Ratio`, `Delay Mode`,
+`303 1 Cutoff`), because Live lists the title. The stable id does not.
+Each parameter is the engine's byte, 0..=127, at the constructor default. The
+audio thread writes a byte only when Ableton's value changed, through the
+same setter the panel uses. While the panel drags that control, the drag
+wins. A MIDI CC uses the same setter. The editor copies the snapshot back, so
+a panel move moves Ableton's control. Pattern steps are not parameters.
+`reset` halts, locates to tick 0, and clears the clock and the held notes. It
+does not reload the song.
 
 ## Song
 
-`ORB_VST_SONG`, if set, is read once in `initialize`. Parse errors are printed
-and the plugin keeps the empty engine. After a successful load the engine is
-halted. The VST always uses the built-in kit (`rbm::standard::builtin_samples`).
-It does not load the song's mod. The variable is not a test input.
+The host's project stores the open song. The persisted field `rbs` is the
+bytes File > Save writes (`App::song_bytes`). On load those bytes open through
+the same path as a song with no file (`App::open_unsaved`). A missing field is
+the empty song, so a set saved before the field still opens. A field that does
+not parse is printed and the empty song stays. `reset` does not reload it.
+`ORB_VST_SONG`, if set, is read once in `initialize` only when that field is
+empty. Parse errors are printed and the plugin keeps the empty engine. The
+VST always uses the built-in kit (`rbm::standard::builtin_samples`). It does
+not load the song's mod. The variable is not a test input.
 
 ## Build and install (macOS)
 

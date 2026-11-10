@@ -29,11 +29,16 @@ copies beside that mix. The MIDI buses are a change to the vendored wrapper
 
 ## 1. The song in the plugin state
 
-Live's project save asks the plugin for its state. Today that state is
+Implemented. The persisted field `rbs` on `PlugParams` holds the bytes
+`App::song_bytes` writes, the same compose as File > Save. The host reads it
+when it saves the set. On load, `App::open_unsaved` opens those bytes. A
+missing field is the empty song. A field that does not parse is printed and
+the empty song stays. `reset` does not reload the song. `ORB_VST_SONG` is
+read only when the field is empty, and it is not part of the state.
+
+Live's project save asks the plugin for its state. That state is
 `PluginState`: the parameter map and the `#[persist]` fields
-(`third_party/nih-plug/src/wrapper/state.rs`). `PlugParams` is empty, so a
-saved set reopens on the empty song. `ORB_VST_SONG` is read once in
-`initialize` and is not part of the state.
+(`third_party/nih-plug/src/wrapper/state.rs`).
 
 File > Save already writes an RBS 4.2 song. `App::song_bytes` composes it with
 `document::compose` and `rbs::Song::write`. That is the blob to store.
@@ -57,10 +62,16 @@ opens on the empty song. `Song::parse` of the stored bytes succeeds and
 
 ## 2. Host parameters and the panel
 
-`PlugParams` is empty on purpose. An earlier set of host knobs wrote the
-engine on every buffer and fought the panel. The replacement writes a byte
-only when the rounded value changes, through the same setter the panel's
-command uses, and the panel draws the byte the snapshot already publishes.
+Implemented in `crates/orb-vst/src/params.rs`. Ableton sees the groups below
+as units. Every value is the engine's byte, `0..=127`. The audio thread
+writes a byte only when the host value changed, through the same setter the
+panel uses. A panel drag wins for that byte. The editor copies the snapshot
+back, so a panel move moves Ableton's control. MIDI CCs use that same write.
+Pattern steps are not parameters, and automation is not sample-accurate.
+
+An earlier set of host knobs wrote the engine on every buffer and fought the
+panel. The replacement writes a byte only when the value changes, and the
+panel draws the byte the snapshot already publishes.
 
 `Snapshot` (`crates/orb-player/src/lib.rs`) already carries `mixer` and every
 device's `live` block. The panel's `Link::sync` already applies that to the

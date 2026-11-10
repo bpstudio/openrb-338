@@ -101,7 +101,7 @@ fn synth_index(channel: u8) -> Option<usize> {
 
 fn cc_to(engine: &mut Engine, channel: u8, cc: u8, value: u8) {
     if cc == 7 {
-        engine.frame.devices.mixer.set_master(value);
+        crate::params::write(engine, crate::params::Target::Master, value);
         return;
     }
     let Some(i) = synth_index(channel) else {
@@ -122,7 +122,14 @@ fn cc_to(engine: &mut Engine, channel: u8, cc: u8, value: u8) {
     } else {
         Device::Tb303_2
     };
-    engine.set_param(device, ctrl as u8, value);
+    crate::params::write(
+        engine,
+        crate::params::Target::Ctrl {
+            device,
+            ctrl: ctrl as u8,
+        },
+        value,
+    );
 }
 
 /// 808 column for a GM-ish note, or none.
@@ -183,6 +190,23 @@ mod tests {
         assert_eq!(tr808_column(60), None);
         assert_eq!(tr909_column(51), Some(tr909::RC));
         assert_eq!(tr909_column(49), Some(tr909::CC));
+    }
+
+    #[test]
+    fn cc_cutoff_uses_the_same_byte_as_a_host_parameter() {
+        use orb_engine::frame::{Devices, Engine};
+        use orb_engine::tables::Tables;
+        use std::sync::Arc;
+        let mut engine = Engine::new(Arc::new(Tables::new()), Devices::implemented(None));
+        Keys::default().apply(
+            &mut engine,
+            Event::Cc {
+                channel: 0,
+                cc: 3,
+                value: 40,
+            },
+        );
+        assert_eq!(engine.frame.devices.channels[0].live()[tb303::CUTOFF], 40);
     }
 
     #[test]

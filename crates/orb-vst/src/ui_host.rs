@@ -13,7 +13,7 @@ use baseview::{
 };
 use eframe::egui::{self, Pos2, Rect, pos2, vec2};
 use keyboard_types::{Key, KeyState, KeyboardEvent, Modifiers};
-use nih_plug::prelude::ParentWindowHandle;
+use nih_plug::prelude::{GuiContext, ParamSetter, ParentWindowHandle};
 use orb_ui::app::App;
 use orb_ui::layout::{PANEL_H, PANEL_W};
 use orb_ui::menu::MENU_H;
@@ -94,7 +94,14 @@ impl Drop for Closer {
     }
 }
 
-pub fn open(parent: &ParentWindowHandle, app: Arc<Mutex<App>>, frame: Arc<FrameSize>) -> Closer {
+pub fn open(
+    parent: &ParentWindowHandle,
+    app: Arc<Mutex<App>>,
+    frame: Arc<FrameSize>,
+    params: Arc<crate::params::PlugParams>,
+    gestures: Arc<crate::params::Gestures>,
+    context: Arc<dyn GuiContext>,
+) -> Closer {
     let flag = Arc::new(AtomicBool::new(false));
     let flag_ui = flag.clone();
     OPEN.with(|slot| {
@@ -114,7 +121,7 @@ pub fn open(parent: &ParentWindowHandle, app: Arc<Mutex<App>>, frame: Arc<FrameS
                 scale: baseview::WindowScalePolicy::SystemScaleFactor,
                 gl_config: Some(baseview::gl::GlConfig::default()),
             },
-            move |window| Host::new(window, app, flag_ui, frame_ui),
+            move |window| Host::new(window, app, flag_ui, frame_ui, params, gestures, context),
         );
         OPEN.with(|slot| *slot.borrow_mut() = Some(handle));
     }));
@@ -137,6 +144,11 @@ fn panic_msg(payload: &(dyn std::any::Any + Send)) -> &str {
 
 struct Host {
     app: Arc<Mutex<App>>,
+    params: Arc<crate::params::PlugParams>,
+    gestures: Arc<crate::params::Gestures>,
+    context: Arc<dyn GuiContext>,
+    /// A host gesture is open for this parameter, so Ableton records the panel move.
+    begun: Vec<bool>,
     frame: Arc<FrameSize>,
     /// Logical size last given to the child view.
     applied: (u32, u32),
@@ -159,6 +171,9 @@ impl Host {
         app: Arc<Mutex<App>>,
         close: Arc<AtomicBool>,
         frame: Arc<FrameSize>,
+        params: Arc<crate::params::PlugParams>,
+        gestures: Arc<crate::params::Gestures>,
+        context: Arc<dyn GuiContext>,
     ) -> Self {
         #[cfg(target_os = "macos")]
         if let raw_window_handle::RawWindowHandle::AppKit(handle) = window.raw_window_handle() {
@@ -209,8 +224,13 @@ impl Host {
             },
         );
         let applied = (width, height);
+        let begun = vec![false; crate::params::initial_sent(&params).len()];
         Host {
             app,
+            params,
+            gestures,
+            context,
+            begun,
             frame,
             applied,
             close,
@@ -343,6 +363,15 @@ impl Host {
                 .show(ui, |ui| {
                     if let Ok(mut panel) = app.lock() {
                         panel.show(ui);
+                        let held = panel.panel.held.clone();
+                        self.gestures.set_held(held.as_deref());
+                        if let Some(link) = panel.link.as_mut() {
+                            let snap = *link.player().snapshot();
+                            let setter = ParamSetter::new(self.context.as_ref());
+                            self.params.follow(&setter, &snap, &mut self.begun);
+                        }
+                        // The project save may run while this frame holds the panel.
+                        self.params.song.capture(&panel);
                     }
                 });
         });

@@ -4,16 +4,23 @@
 #
 #   cargo build --release -p orb-vst && scripts/macos-vst3.sh
 #
-#   scripts/macos-vst3.sh [LIBOPENRB338_DYLIB]
+#   scripts/macos-vst3.sh [--no-install] [LIBOPENRB338_DYLIB]
 #
 # The dylib defaults to target/release/libopenrb338.dylib. The bundle is
 # target/OpenRB-338.vst3 (ad-hoc signed). A copy is installed at
-# ~/Library/Audio/Plug-Ins/VST3/OpenRB-338.vst3. Run the script again after each
-# build, then rescan plug-ins in Live. The instrument is specified in PLAN.md.
+# ~/Library/Audio/Plug-Ins/VST3/OpenRB-338.vst3. --no-install only writes the
+# bundle, which the release zip uses for the Intel build. Run the script again
+# after each build, then rescan plug-ins in Live. The instrument is specified
+# in PLAN.md.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 target=${CARGO_TARGET_DIR:-$root/target}
+install=1
+if [ "${1:-}" = --no-install ]; then
+    install=0
+    shift
+fi
 lib=${1:-$target/release/libopenrb338.dylib}
 [ -f "$lib" ] || { echo "no $lib: cargo build --release -p orb-vst" >&2; exit 1; }
 
@@ -59,9 +66,11 @@ plutil -lint "$bundle/Contents/Info.plist"
 codesign --force --sign - "$bundle"
 codesign --verify --strict --verbose=2 "$bundle"
 
-dest="$HOME/Library/Audio/Plug-Ins/VST3/OpenRB-338.vst3"
-mkdir -p "$HOME/Library/Audio/Plug-Ins/VST3"
-rm -rf "$dest"
-cp -R "$bundle" "$dest"
 echo "made $bundle"
-echo "installed $dest"
+if [ "$install" -eq 1 ]; then
+    dest="$HOME/Library/Audio/Plug-Ins/VST3/OpenRB-338.vst3"
+    mkdir -p "$HOME/Library/Audio/Plug-Ins/VST3"
+    rm -rf "$dest"
+    cp -R "$bundle" "$dest"
+    echo "installed $dest"
+fi
