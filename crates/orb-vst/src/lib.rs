@@ -178,8 +178,7 @@ impl Plugin for OpenRb {
         if self.scratch.len() < n {
             self.scratch.resize(n, [0.0; CHANS]);
         }
-        self.out
-            .fill(&mut self.audio, &mut self.scratch[..n]);
+        self.out.fill(&mut self.audio, &mut self.scratch[..n]);
         write_main(buffer, &self.scratch[..n]);
         for (port, bus) in aux.outputs.iter_mut().enumerate() {
             write_aux(bus, &self.scratch[..n], 2 + 2 * port);
@@ -208,6 +207,9 @@ impl Editor for PanelEditor {
 
     fn on_host_resize(&self, width: u32, height: u32) {
         self.frame.set(width, height);
+        // The host reports the size while the window is opening. Waiting for the
+        // next frame leaves the panel at the size the view was created with.
+        self.frame.apply();
     }
 
     fn min_size(&self) -> (u32, u32) {

@@ -133,8 +133,9 @@ context is made current before glow loads: glow reads `GL_VERSION` at that
 moment, and a panic there crosses `IPlugView::attached` and aborts the host.
 The logical size starts at the panel, 624×510, plus the menu bar, 22:
 624×532. The host may resize it. The minimum is half the panel, the same
-floor as the app (`PANEL_W / 2` by `PANEL_H / 2 + MENU_H`). The child view
-takes that logical size on the next frame. `App::show` fits the 624×510 panel
+floor as the app (`PANEL_W / 2` by `PANEL_H / 2 + MENU_H`). The child view is
+resized to that logical size as soon as the editor is attached, and again
+whenever the host reports a size. `App::show` fits the 624×510 panel
 into the area under the menu, one scale for both axes, letterboxed, and the
 SVGs rasterize again at the new pixel size. The scale comes from the view.
 The editor holds `Arc<Mutex<App>>`. The audio thread

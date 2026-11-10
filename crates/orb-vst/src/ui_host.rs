@@ -4,19 +4,21 @@
 //! delegate.
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use baseview::{
     Event, EventStatus, MouseEvent, PhySize, Window, WindowEvent, WindowHandler, WindowOpenOptions,
 };
-use eframe::egui::{self, pos2, vec2, Pos2, Rect};
+use eframe::egui::{self, Pos2, Rect, pos2, vec2};
 use keyboard_types::{Key, KeyState, KeyboardEvent, Modifiers};
 use nih_plug::prelude::ParentWindowHandle;
 use orb_ui::app::App;
 use orb_ui::layout::{PANEL_H, PANEL_W};
 use orb_ui::menu::MENU_H;
+#[cfg(target_os = "macos")]
+use raw_window_handle::HasRawWindowHandle;
 
 /// Logical size of the app window: the panel plus the menu bar.
 pub const W: f64 = PANEL_W as f64;
@@ -26,6 +28,8 @@ pub const H: f64 = (PANEL_H + MENU_H) as f64;
 pub struct FrameSize {
     width: AtomicU32,
     height: AtomicU32,
+    /// The child `NSView`, once the window exists. Zero before that.
+    view: AtomicUsize,
 }
 
 impl FrameSize {
@@ -33,6 +37,7 @@ impl FrameSize {
         Self {
             width: AtomicU32::new(width),
             height: AtomicU32::new(height),
+            view: AtomicUsize::new(0),
         }
     }
 
@@ -46,6 +51,25 @@ impl FrameSize {
     pub fn set(&self, width: u32, height: u32) {
         self.width.store(width, Ordering::Relaxed);
         self.height.store(height, Ordering::Relaxed);
+    }
+
+    fn set_view(&self, view: usize) {
+        self.view.store(view, Ordering::Relaxed);
+    }
+
+    fn view_ptr(&self) -> usize {
+        self.view.load(Ordering::Relaxed)
+    }
+
+    /// Resize the child view to the size last stored. The host's window is
+    /// already that size while `attached` is still running; the next frame is
+    /// too late for the first paint.
+    pub fn apply(&self) {
+        let (width, height) = self.get();
+        if width == 0 || height == 0 {
+            return;
+        }
+        apply_view(self.view_ptr(), width, height);
     }
 }
 
@@ -70,11 +94,7 @@ impl Drop for Closer {
     }
 }
 
-pub fn open(
-    parent: &ParentWindowHandle,
-    app: Arc<Mutex<App>>,
-    frame: Arc<FrameSize>,
-) -> Closer {
+pub fn open(parent: &ParentWindowHandle, app: Arc<Mutex<App>>, frame: Arc<FrameSize>) -> Closer {
     let flag = Arc::new(AtomicBool::new(false));
     let flag_ui = flag.clone();
     OPEN.with(|slot| {
@@ -83,21 +103,26 @@ pub fn open(
         }
     });
     // A panic here crosses `IPlugView::attached` and aborts the host.
+    let (width, height) = frame.get();
+    let frame_ui = Arc::clone(&frame);
     let opened = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let handle = Window::open_parented(
             parent,
             WindowOpenOptions {
                 title: "OpenRB-338".to_owned(),
-                size: baseview::Size::new(W, H),
+                size: baseview::Size::new(f64::from(width), f64::from(height)),
                 scale: baseview::WindowScalePolicy::SystemScaleFactor,
                 gl_config: Some(baseview::gl::GlConfig::default()),
             },
-            move |window| Host::new(window, app, flag_ui, frame),
+            move |window| Host::new(window, app, flag_ui, frame_ui),
         );
         OPEN.with(|slot| *slot.borrow_mut() = Some(handle));
     }));
     if let Err(payload) = opened {
         eprintln!("OpenRB-338: editor: {}", panic_msg(&payload));
+    } else {
+        // The view is in the host window now. Size it before the window is shown.
+        frame.apply();
     }
     Closer { flag }
 }
@@ -135,8 +160,20 @@ impl Host {
         close: Arc<AtomicBool>,
         frame: Arc<FrameSize>,
     ) -> Self {
-        let pixels_per_point = 1.0;
-        let physical = PhySize::new(W.round() as u32, H.round() as u32);
+        #[cfg(target_os = "macos")]
+        if let raw_window_handle::RawWindowHandle::AppKit(handle) = window.raw_window_handle() {
+            frame.set_view(handle.ns_view as usize);
+        }
+        let (width, height) = frame.get();
+        // The GL view does not follow the NSView until this runs. Do it before
+        // the first paint, not on the next frame.
+        window.resize(baseview::Size::new(f64::from(width), f64::from(height)));
+        let mut pixels_per_point = 1.0;
+        let mut physical = PhySize::new(width, height);
+        if let Some(screen) = view_screen(frame.view_ptr()) {
+            pixels_per_point = screen.0;
+            physical = screen.1;
+        }
         let (glow, painter) = match window.gl_context() {
             Some(gl) => unsafe {
                 // glow reads GL_VERSION while loading. Without a current context that
@@ -157,7 +194,7 @@ impl Host {
             },
             None => (None, None),
         };
-        let screen = screen_rect(physical, pixels_per_point);
+        let screen = screen_rect(physical, 1.0 / pixels_per_point);
         let mut raw = egui::RawInput {
             screen_rect: Some(screen),
             ..Default::default()
@@ -171,7 +208,7 @@ impl Host {
                 ..Default::default()
             },
         );
-        let applied = frame.get();
+        let applied = (width, height);
         Host {
             app,
             frame,
@@ -274,8 +311,14 @@ impl Host {
     fn draw(&mut self, window: &mut Window) {
         let asked = self.frame.get();
         if asked != self.applied && asked.0 > 0 && asked.1 > 0 {
-            window.resize(baseview::Size::new(asked.0 as f64, asked.1 as f64));
+            window.resize(baseview::Size::new(f64::from(asked.0), f64::from(asked.1)));
+            self.frame.apply();
             self.applied = asked;
+        }
+        if let Some(screen) = view_screen(self.frame.view_ptr()) {
+            self.pixels_per_point = screen.0;
+            self.physical = screen.1;
+        } else if asked.0 > 0 && asked.1 > 0 {
             self.physical = PhySize::new(
                 (asked.0 as f32 * self.pixels_per_point).round().max(1.0) as u32,
                 (asked.1 as f32 * self.pixels_per_point).round().max(1.0) as u32,
@@ -308,7 +351,10 @@ impl Host {
 
     fn on_mouse(&mut self, ev: MouseEvent) {
         match ev {
-            MouseEvent::CursorMoved { position, modifiers } => {
+            MouseEvent::CursorMoved {
+                position,
+                modifiers,
+            } => {
                 self.set_modifiers(modifiers);
                 let p = pos2(position.x as f32, position.y as f32);
                 self.pointer = Some(p);
@@ -421,6 +467,93 @@ impl Host {
             }
             WindowEvent::WillClose => {}
         }
+    }
+}
+
+fn apply_view(view: usize, width: u32, height: u32) {
+    #[cfg(target_os = "macos")]
+    apply_view_mac(view, width, height);
+    #[cfg(not(target_os = "macos"))]
+    let _ = (view, width, height);
+}
+
+/// Logical scale and the view's physical pixel size, read from the live view.
+fn view_screen(view: usize) -> Option<(f32, PhySize)> {
+    #[cfg(target_os = "macos")]
+    {
+        view_screen_mac(view)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = view;
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn apply_view_mac(view: usize, width: u32, height: u32) {
+    if view == 0 {
+        return;
+    }
+    unsafe {
+        use cocoa::appkit::NSView;
+        let view = view as cocoa::base::id;
+        let size = cocoa::foundation::NSSize::new(f64::from(width), f64::from(height));
+        view.setFrameSize(size);
+        resize_subviews(view, size);
+    }
+}
+
+/// The OpenGL view is a subview. `Window::resize` sizes it too; this covers the
+/// resize that arrives from the host before the next frame.
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
+fn resize_subviews(view: cocoa::base::id, size: cocoa::foundation::NSSize) {
+    use cocoa::appkit::NSView;
+    use objc::{sel, sel_impl};
+    unsafe {
+        let subviews: cocoa::base::id = objc::msg_send![view, subviews];
+        if subviews == cocoa::base::nil {
+            return;
+        }
+        let count: usize = objc::msg_send![subviews, count];
+        for i in 0..count {
+            let sub: cocoa::base::id = objc::msg_send![subviews, objectAtIndex: i];
+            sub.setFrameSize(size);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
+fn view_screen_mac(view: usize) -> Option<(f32, PhySize)> {
+    if view == 0 {
+        return None;
+    }
+    use objc::{sel, sel_impl};
+    unsafe {
+        use cocoa::appkit::{NSView, NSWindow};
+        let view = view as cocoa::base::id;
+        let window: cocoa::base::id = objc::msg_send![view, window];
+        let mut scale = if window == cocoa::base::nil {
+            1.0
+        } else {
+            window.backingScaleFactor()
+        };
+        if scale <= 0.0 {
+            scale = 1.0;
+        }
+        let bounds = view.bounds();
+        if bounds.size.width < 1.0 || bounds.size.height < 1.0 {
+            return None;
+        }
+        Some((
+            scale as f32,
+            PhySize::new(
+                (bounds.size.width * scale).round().max(1.0) as u32,
+                (bounds.size.height * scale).round().max(1.0) as u32,
+            ),
+        ))
     }
 }
 

@@ -305,6 +305,11 @@ impl<P: Vst3Plugin> IPlugView for WrapperView<P> {
                     .spawn(parent_handle, self.inner.clone().make_gui_context()),
             );
             *self.inner.plug_view.write() = Some(ObjectPtr::from(self));
+            // `request_resize` reads `editor_handle`. The write guard above is still
+            // held, and `RwLock` does not lock twice on one thread.
+            drop(editor_handle);
+            // The host window is often not `Editor::size()` yet. Ask before it is shown.
+            let _ = self.request_resize();
 
             kResultOk
         } else {

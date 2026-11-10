@@ -3346,14 +3346,17 @@ name = "orb-vst"
 version = "0.1.0"
 dependencies = [
  "baseview",
+ "cocoa",
  "eframe",
  "egui_extras",
  "egui_glow",
  "keyboard-types",
  "nih_plug",
+ "objc",
  "orb-engine",
  "orb-player",
  "orb-ui",
+ "raw-window-handle 0.5.2",
  "rbm",
  "rbs",
 ]
